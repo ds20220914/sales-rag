@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Data files
+data/
+*.csv
+*.xlsx
+*.xls
+*.json
+*.parquet
+
+# Vector database
+chroma_db/
+chromadb/
+*.db
+*.sqlite
+
+# Ollama / model cache
+models/
+*.gguf
+*.bin
+*.safetensors
+
+# HuggingFace cache
+.cache/
+huggingface/
+
+# Environment variables
+.env
+.env.*
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs & output
+logs/
+*.log
+output/
+results/
+screenshots/
+
+claude.md
