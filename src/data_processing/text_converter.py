@@ -173,26 +173,39 @@ def build_annual_summaries(df: pd.DataFrame) -> list[dict]:
     df = df.copy()
     df["Year"] = df["Order Date"].dt.year
     records = []
-    prev_sales = None
+    prev_row = None
 
     for year, grp in df.groupby("Year"):
-        yoy = ""
-        if prev_sales is not None:
-            change = (grp["Sales"].sum() - prev_sales) / prev_sales * 100
-            direction = "up" if change >= 0 else "down"
-            yoy = f" ({direction} {abs(change):.1f}% year-over-year)"
-        prev_sales = grp["Sales"].sum()
-
+        sales = grp["Sales"].sum()
+        profit = grp["Profit"].sum()
+        margin = profit / sales * 100
         top_cat = grp.groupby("Category")["Sales"].sum().idxmax()
         top_region = grp.groupby("Region")["Sales"].sum().idxmax()
+
+        if prev_row is not None:
+            prev_sales, prev_margin = prev_row
+            sales_chg = (sales - prev_sales) / prev_sales * 100
+            margin_chg = margin - prev_margin
+            trend_dir = "grew" if sales_chg >= 0 else "declined"
+            margin_trend = "improved" if margin_chg >= 0 else "decreased"
+            yoy_text = (
+                f" Sales {trend_dir} {abs(sales_chg):.1f}% year-over-year. "
+                f"Profit margin {margin_trend} by {abs(margin_chg):.1f} percentage points compared to the previous year."
+            )
+        else:
+            yoy_text = " This is the first year in the dataset; no prior-year comparison available."
+
+        prev_row = (sales, margin)
+
         text = (
-            f"Annual summary for {year}: "
-            f"total sales ${grp['Sales'].sum():,.2f}{yoy}, "
-            f"total profit ${grp['Profit'].sum():,.2f} "
-            f"(margin {grp['Profit'].sum() / grp['Sales'].sum() * 100:.1f}%), "
+            f"Annual sales trend for {year}: "
+            f"total annual sales ${sales:,.2f}, "
+            f"total annual profit ${profit:,.2f} "
+            f"(annual profit margin {margin:.1f}%), "
             f"{grp['Order ID'].nunique():,} unique orders, "
             f"avg discount {grp['Discount'].mean():.1%}. "
-            f"Top category: {top_cat}. Top region: {top_region}."
+            f"Top revenue category: {top_cat}. Top region by sales: {top_region}."
+            f"{yoy_text}"
         )
         records.append({
             "id": f"annual_{year}",
