@@ -32,6 +32,8 @@ chroma_db/
 chromadb/
 *.db
 *.sqlite
+*.sqlite3
+*.pickle
 
 # Ollama / model cache
 models/
