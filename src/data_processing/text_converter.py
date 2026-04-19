@@ -87,14 +87,24 @@ def build_monthly_summaries(df: pd.DataFrame) -> list[dict]:
 def build_category_summaries(df: pd.DataFrame) -> list[dict]:
     records = []
 
+    # Rank categories by revenue up front so each doc can reference its rank
+    cat_revenue = df.groupby("Category")["Sales"].sum().sort_values(ascending=False)
+    rank_label = {cat: i + 1 for i, cat in enumerate(cat_revenue.index)}
+    ordinal = {1: "1st", 2: "2nd", 3: "3rd"}
+
     # Category level
     for cat, grp in df.groupby("Category"):
+        sales = grp["Sales"].sum()
+        profit = grp["Profit"].sum()
+        rank = rank_label[cat]
+        rank_str = ordinal.get(rank, f"{rank}th")
         text = (
-            f"Category '{cat}' performance: "
+            f"Category revenue summary for '{cat}': "
+            f"total revenue (sales) ${sales:,.2f}, "
+            f"ranked {rank_str} among all categories by revenue. "
+            f"Total profit ${profit:,.2f} "
+            f"(profit margin {profit / sales * 100:.1f}%), "
             f"{len(grp):,} transactions, "
-            f"total sales ${grp['Sales'].sum():,.2f}, "
-            f"total profit ${grp['Profit'].sum():,.2f} "
-            f"(margin {grp['Profit'].sum() / grp['Sales'].sum() * 100:.1f}%), "
             f"avg discount {grp['Discount'].mean():.1%}. "
             f"Sub-categories: {', '.join(grp['Sub-Category'].unique())}."
         )
@@ -352,13 +362,17 @@ def build_statistical_summary(df: pd.DataFrame) -> list[dict]:
     top_product = df.groupby("Product Name")["Sales"].sum().idxmax()
 
     # 8a. General overview
+    cat_rev = df.groupby("Category")["Sales"].sum().sort_values(ascending=False)
+    cat_rev_lines = ", ".join(f"{cat}: ${rev:,.2f}" for cat, rev in cat_rev.items())
     overview = (
         f"Overall overview: The Superstore dataset covers {len(df):,} transactions "
         f"from {years[0]} to {years[-1]}, across {df['State'].nunique()} states "
         f"and {df['City'].nunique()} cities. "
-        f"Total sales: ${df['Sales'].sum():,.2f}, average order value: ${df['Sales'].mean():.2f}. "
-        f"Highest-sales month across all years: {_MONTH_NAMES[best_month]}. "
-        f"Top product by total sales: '{top_product}'."
+        f"Total revenue (sales): ${df['Sales'].sum():,.2f}, average order value: ${df['Sales'].mean():.2f}. "
+        f"Category revenue ranking (highest to lowest): {cat_rev_lines}. "
+        f"Top category by revenue: {cat_rev.index[0]}. "
+        f"Highest-revenue month across all years: {_MONTH_NAMES[best_month]}. "
+        f"Top product by total revenue: '{top_product}'."
     )
 
     # 8b. Profit analysis
@@ -493,6 +507,23 @@ def build_comparative_summaries(df: pd.DataFrame) -> list[dict]:
 # ── 11. Top performers ranking summary ───────────────────────────────────────
 
 def build_top_performers_summary(df: pd.DataFrame) -> list[dict]:
+    # Category revenue ranking
+    cat_rev = df.groupby("Category").agg(
+        sales=("Sales","sum"), profit=("Profit","sum")
+    ).sort_values("sales", ascending=False)
+    cat_lines = "; ".join(
+        f"{cat}: revenue ${r.sales:,.2f} (margin {r.profit/r.sales*100:.1f}%)"
+        for cat, r in cat_rev.iterrows()
+    )
+    top_cat = cat_rev.index[0]
+    text = (
+        f"Category revenue ranking (all years combined): {cat_lines}. "
+        f"{top_cat} generates the most revenue among all categories. "
+        f"This ranking shows which product category has the highest total sales revenue."
+    )
+    records = [{"id": "category_revenue_ranking", "text": text,
+                "metadata": {"type": "top_performers_summary"}}]
+
     # Top 10 states by total sales
     top_states = df.groupby("State").agg(
         sales=("Sales","sum"), profit=("Profit","sum")
@@ -502,10 +533,10 @@ def build_top_performers_summary(df: pd.DataFrame) -> list[dict]:
         for state, r in top_states.iterrows()
     )
     text = (
-        f"Top 10 states ranked by total sales: {state_lines}. "
+        f"Top 10 states ranked by total sales revenue: {state_lines}. "
         f"California leads all states with the highest revenue, followed by New York and Texas."
     )
-    records = [{"id": "top_states_by_sales", "text": text, "metadata": {"type": "top_performers_summary"}}]
+    records.append({"id": "top_states_by_sales", "text": text, "metadata": {"type": "top_performers_summary"}})
 
     # Top sub-categories by profit margin (min 50 transactions)
     sub_stats = df.groupby("Sub-Category").agg(
