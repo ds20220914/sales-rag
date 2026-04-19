@@ -1,7 +1,11 @@
+import os
 import pandas as pd
 
 
-def load_data(path: str = "../../data/Superstore.csv") -> pd.DataFrame:
+def load_data(path: str = None) -> pd.DataFrame:
+    if path is None:
+        _here = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(_here, "..", "..", "data", "Superstore.csv")
     df = pd.read_csv(path, encoding="latin-1")
     df["Order Date"] = pd.to_datetime(df["Order Date"])
     df["Ship Date"] = pd.to_datetime(df["Ship Date"])

@@ -84,8 +84,9 @@ def run_tests(persist_dir: str, n_results: int) -> None:
         for rank, r in enumerate(results, 1):
             dist = r["distance"]
             relevance = "HIGH" if dist < 0.5 else "MED" if dist < 0.9 else "LOW"
+            snippet = r['text'][:200].strip().encode("ascii", errors="replace").decode("ascii")
             print(f"  #{rank} [{relevance}] dist={dist:.4f}  id={r['id']}")
-            print(f"      {r['text'][:200].strip()}")
+            print(f"      {snippet}")
             if rank < len(results):
                 print()
 

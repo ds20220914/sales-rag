@@ -30,7 +30,11 @@ def get_collection(
 ) -> chromadb.Collection:
     if name not in _COLLECTIONS:
         raise ValueError(f"Unknown collection '{name}'. Choose from {_COLLECTIONS}.")
-    return client.get_or_create_collection(name=name, embedding_function=ef)
+    return client.get_or_create_collection(
+        name=name,
+        embedding_function=ef,
+        metadata={"hnsw:space": "cosine"},
+    )
 
 
 def upsert_chunks(collection: chromadb.Collection, chunks: list) -> None:
