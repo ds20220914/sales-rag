@@ -504,7 +504,70 @@ def build_comparative_summaries(df: pd.DataFrame) -> list[dict]:
     return records
 
 
-# ── 11. Top performers ranking summary ───────────────────────────────────────
+# ── 11. Seasonal & quarterly ranking summary ─────────────────────────────────
+
+def build_seasonal_ranking_summary(df: pd.DataFrame) -> list[dict]:
+    df = df.copy()
+    df["Quarter"] = df["Order Date"].dt.month.map(_QUARTER_MAP)
+    df["Season"] = df["Order Date"].dt.month.map(_SEASON_MAP)
+
+    # Quarter ranking (aggregated across all years)
+    q_stats = df.groupby("Quarter").agg(
+        sales=("Sales", "sum"), profit=("Profit", "sum"), orders=("Order ID", "nunique")
+    ).sort_values("sales", ascending=False)
+    q_lines = "; ".join(
+        f"{q}: ${r.sales:,.2f} (margin {r.profit/r.sales*100:.1f}%, {r.orders:,} orders)"
+        for q, r in q_stats.iterrows()
+    )
+    top_q = q_stats.index[0]
+
+    # Season ranking (aggregated across all years)
+    s_stats = df.groupby("Season").agg(
+        sales=("Sales", "sum"), profit=("Profit", "sum")
+    ).sort_values("sales", ascending=False)
+    s_lines = "; ".join(
+        f"{s}: ${r.sales:,.2f} (margin {r.profit/r.sales*100:.1f}%)"
+        for s, r in s_stats.iterrows()
+    )
+    top_s = s_stats.index[0]
+
+    text = (
+        f"Seasonal and quarterly sales ranking (all years combined). "
+        f"Quarter ranking by total sales: {q_lines}. "
+        f"{top_q} is the highest-sales quarter across all years. "
+        f"Season ranking by total sales: {s_lines}. "
+        f"{top_s} is the highest-sales season. "
+        f"Sales peak in Q4 (October–December) driven by year-end purchasing."
+    )
+    return [{"id": "seasonal_quarter_ranking", "text": text,
+             "metadata": {"type": "seasonal_ranking_summary"}}]
+
+
+# ── 12. Region ranking summary ────────────────────────────────────────────────
+
+def build_region_ranking_summary(df: pd.DataFrame) -> list[dict]:
+    r_stats = df.groupby("Region").agg(
+        sales=("Sales", "sum"), profit=("Profit", "sum"), orders=("Order ID", "nunique")
+    ).sort_values("sales", ascending=False)
+    r_lines = "; ".join(
+        f"{region}: sales ${r.sales:,.2f}, profit ${r.profit:,.2f} "
+        f"(margin {r.profit/r.sales*100:.1f}%)"
+        for region, r in r_stats.iterrows()
+    )
+    top_r = r_stats.index[0]
+    top_profit_r = r_stats["profit"].idxmax()
+
+    text = (
+        f"Region ranking by total sales and profit (all years combined): {r_lines}. "
+        f"{top_r} is the best-performing region by total sales. "
+        f"{top_profit_r} is the best-performing region by total profit. "
+        f"This ranking shows which region has the highest revenue and profit."
+    )
+    return [{"id": "region_ranking", "text": text,
+             "metadata": {"type": "region_ranking_summary"}}]
+
+
+# ── 13. Top performers ranking summary ───────────────────────────────────────
 
 def build_top_performers_summary(df: pd.DataFrame) -> list[dict]:
     # Category revenue ranking
@@ -583,6 +646,8 @@ def build_summary_docs(df: pd.DataFrame) -> list[dict]:
         + build_statistical_summary(df)
         + build_trend_summary(df)
         + build_comparative_summaries(df)
+        + build_seasonal_ranking_summary(df)
+        + build_region_ranking_summary(df)
         + build_top_performers_summary(df)
     )
 
