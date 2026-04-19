@@ -2,14 +2,18 @@
 Manual retrieval test — runs a set of representative queries and prints results.
 
 Usage:
-    python src/vector_db/retrieval_test.py [--persist-dir ./chroma_db] [--n 5]
+    python src/vector_db/retrieval_test.py [--n 5]
+
+Default persist directory: src/vector_db/chroma_db
 """
 
 import argparse
 import sys
 import os
 
-_SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_SRC_DIR = os.path.dirname(_HERE)
+_DEFAULT_DB = os.path.join(_HERE, "chroma_db")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
@@ -99,7 +103,7 @@ def run_tests(persist_dir: str, n_results: int) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--persist-dir", default="./chroma_db")
+    parser.add_argument("--persist-dir", default=_DEFAULT_DB)
     parser.add_argument("--n", type=int, default=3, help="Results per query")
     args = parser.parse_args()
 

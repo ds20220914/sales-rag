@@ -2,7 +2,9 @@
 One-shot script: build and persist the ChromaDB index.
 
 Usage:
-    python src/vector_db/build_index.py [--chunk-size 1000] [--persist-dir ./chroma_db]
+    python src/vector_db/build_index.py [--chunk-size 1000] [--persist-dir <path>]
+
+Default persist directory: src/vector_db/chroma_db
 """
 
 import argparse
@@ -10,7 +12,9 @@ import sys
 import os
 import time
 
-_SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_SRC_DIR = os.path.dirname(_HERE)
+_DEFAULT_DB = os.path.join(_HERE, "chroma_db")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
@@ -77,7 +81,7 @@ def _smoke_test(persist_dir: str) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--chunk-size",  type=int, default=1000)
-    parser.add_argument("--persist-dir", type=str, default="./chroma_db")
+    parser.add_argument("--persist-dir", type=str, default=_DEFAULT_DB)
     parser.add_argument("--smoke-test",  action="store_true",
                         help="Run sample queries after building the index")
     args = parser.parse_args()
