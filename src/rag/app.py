@@ -5,9 +5,22 @@ Usage:
     streamlit run src/rag/app.py
 
 Optional env vars:
-    OLLAMA_MODEL   : Ollama model to use (default: llama3.2:3b)
-    CHROMA_DB_DIR  : Path to ChromaDB directory (default: src/vector_db/chroma_db)
+    CHROMA_DB_DIR  : Path to ChromaDB dir (default: src/vector_db/chroma_db)
+
+    All other configuration (API key, model, Ollama host) is entered via the UI.
+    Model defaults live in the adapters:
+        llm/openai_adapter.py  — default model: gpt-4o-mini
+        llm/ollama_adapter.py  — OLLAMA_HOST (default: http://localhost:11434)
+                               — default model: llama3.2:3b
+
+Architecture
+------------
+app.py      — Streamlit UI; selects provider (OpenAI / Ollama) and mode
+pipeline.py — RAG orchestration; calls the injected LLM adapter
+llm/        — provider adapters (openai_adapter.py, ollama_adapter.py)
 """
+
+from __future__ import annotations
 
 import os
 import sys
@@ -18,14 +31,24 @@ if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
 import streamlit as st
+
+from llm import make_adapter
 from rag.pipeline import RAGPipeline
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
 _DEFAULT_DB = os.path.join(_SRC_DIR, "vector_db", "chroma_db")
-_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:3b")
-_DB_DIR = os.environ.get("CHROMA_DB_DIR", _DEFAULT_DB)
+_DB_DIR     = os.environ.get("CHROMA_DB_DIR", _DEFAULT_DB)
+
+# UI model lists — display only, actual defaults live in the adapters
+_OPENAI_MODELS = ["gpt-4o-mini"]
+_OLLAMA_MODELS = ["llama3.2:3b"]
+
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Source rendering
 # ---------------------------------------------------------------------------
 
 def _render_sources(summary_hits: list[dict], txn_hits: list[dict]) -> None:
@@ -46,19 +69,48 @@ def _render_sources(summary_hits: list[dict], txn_hits: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Session state helpers
+# Session-state helpers
 # ---------------------------------------------------------------------------
 
-@st.cache_resource
-def load_pipeline(mode: str) -> RAGPipeline:
-    return RAGPipeline(persist_dir=_DB_DIR, model=_MODEL, mode=mode)
-
-
 def _init_state() -> None:
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "mode" not in st.session_state:
-        st.session_state.mode = "direct"
+    defaults = {
+        "messages":     [],
+        "mode":         "direct",
+        "provider":     "openai",
+        "openai_api_key": "",
+        "openai_model": _OPENAI_MODELS[0],
+        "ollama_model": _OLLAMA_MODELS[0],
+        "ollama_host":  "http://localhost:11434",
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+@st.cache_resource
+def _load_pipeline(
+    provider: str,
+    model: str,
+    mode: str,
+    api_key: str,
+    ollama_host: str,
+) -> RAGPipeline:
+    """
+    Cache one pipeline per unique (provider, model, mode, api_key, ollama_host).
+    Changing any of these creates a fresh pipeline automatically.
+    """
+    adapter = make_adapter(
+        provider=provider,
+        model=model,
+        api_key=api_key or None,
+        ollama_host=ollama_host or None,
+    )
+    return RAGPipeline(llm=adapter, persist_dir=_DB_DIR, mode=mode)
+
+
+def _reset_chat() -> None:
+    """Clear conversation history from session state and pipeline memory."""
+    st.session_state.messages = []
 
 
 # ---------------------------------------------------------------------------
@@ -68,27 +120,115 @@ def _init_state() -> None:
 def _sidebar() -> tuple[dict | None, bool, str]:
     with st.sidebar:
         st.title("Superstore RAG")
-        st.caption(f"Model: `{_MODEL}`")
         st.divider()
 
+        # ----------------------------------------------------------------
+        # Provider selection
+        # ----------------------------------------------------------------
+        st.subheader("🧠 LLM Provider")
+        provider = st.radio(
+            "Provider",
+            ["openai", "ollama"],
+            index=0 if st.session_state.provider == "openai" else 1,
+            format_func=lambda p: "☁️  OpenAI" if p == "openai" else "🏠  Ollama (local)",
+            help="OpenAI uses cloud models. Ollama runs models locally on your machine.",
+        )
+        if provider != st.session_state.provider:
+            st.session_state.provider = provider
+            _reset_chat()
+            st.rerun()
+
+        # ----------------------------------------------------------------
+        # Provider-specific settings
+        # ----------------------------------------------------------------
+        if provider == "openai":
+            st.subheader("🔑 OpenAI API Key")
+            api_key_input = st.text_input(
+                "API Key",
+                value=st.session_state.openai_api_key,
+                type="password",
+                placeholder="sk-...",
+                help="Get a key at https://platform.openai.com/api-keys",
+            )
+            if api_key_input != st.session_state.openai_api_key:
+                st.session_state.openai_api_key = api_key_input
+                _reset_chat()
+                st.rerun()
+
+            if not st.session_state.openai_api_key:
+                st.warning(
+                    "No API key set. Get one at "
+                    "[platform.openai.com](https://platform.openai.com/api-keys).",
+                    icon="⚠️",
+                )
+
+            st.subheader("🤖 OpenAI Model")
+            selected_model = st.selectbox(
+                "Model",
+                _OPENAI_MODELS,
+                index=_OPENAI_MODELS.index(st.session_state.openai_model)
+                if st.session_state.openai_model in _OPENAI_MODELS else 0,
+                help="gpt-4o-mini is the fastest and most cost-effective.",
+            )
+            if selected_model != st.session_state.openai_model:
+                st.session_state.openai_model = selected_model
+                _reset_chat()
+                st.rerun()
+
+        else:  # ollama
+            st.subheader("🏠 Ollama Settings")
+            ollama_host_input = st.text_input(
+                "Ollama host",
+                value=st.session_state.ollama_host,
+                placeholder="http://localhost:11434",
+            )
+            if ollama_host_input != st.session_state.ollama_host:
+                st.session_state.ollama_host = ollama_host_input
+                _reset_chat()
+                st.rerun()
+
+            selected_ollama_model = st.selectbox(
+                "Ollama model",
+                _OLLAMA_MODELS,
+                index=_OLLAMA_MODELS.index(st.session_state.ollama_model)
+                if st.session_state.ollama_model in _OLLAMA_MODELS else 0,
+                help="Model must already be pulled: `ollama pull <model>`",
+            )
+            if selected_ollama_model != st.session_state.ollama_model:
+                st.session_state.ollama_model = selected_ollama_model
+                _reset_chat()
+                st.rerun()
+
+            st.caption(
+                "Make sure Ollama is running locally and the model is pulled. "
+                "Tool-calling works on llama3.2, llama3.1, mistral, qwen2.5."
+            )
+
+        st.divider()
+
+        # ----------------------------------------------------------------
+        # Retrieval mode
+        # ----------------------------------------------------------------
         st.subheader("Retrieval mode")
         mode = st.radio(
             "Mode",
             ["direct", "agent"],
-            index=0,
+            index=0 if st.session_state.mode == "direct" else 1,
             help=(
                 "**direct** — pipeline calls both tools, builds context, LLM answers once.\n\n"
-                "**agent** — LLM decides which tools to call and with what queries/filters."
+                "**agent** — LLM decides which tools to call and with what queries/filters. "
+                "Requires a tool-capable model."
             ),
         )
         if mode != st.session_state.mode:
             st.session_state.mode = mode
-            st.session_state.messages = []
-            load_pipeline(mode).reset_memory()
+            _reset_chat()
 
         st.divider()
 
-        # Metadata filter is only meaningful in direct mode
+        # ----------------------------------------------------------------
+        # Metadata filter (direct mode only)
+        # ----------------------------------------------------------------
         where: dict | None = None
         if mode == "direct":
             st.subheader("Metadata Filter (optional)")
@@ -110,8 +250,13 @@ def _sidebar() -> tuple[dict | None, bool, str]:
         show_sources = st.toggle("Show retrieved sources", value=True)
 
         if st.button("Clear conversation"):
-            st.session_state.messages = []
-            load_pipeline(mode).reset_memory()
+            _reset_chat()
+            # Also clear pipeline memory
+            try:
+                rag = _get_pipeline()
+                rag.reset_memory()
+            except Exception:
+                pass
             st.rerun()
 
         st.divider()
@@ -134,6 +279,30 @@ def _sidebar() -> tuple[dict | None, bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# Pipeline accessor (reads from session state)
+# ---------------------------------------------------------------------------
+
+def _get_pipeline() -> RAGPipeline:
+    """Build or retrieve the cached pipeline for the current session settings."""
+    provider    = st.session_state.provider
+    mode        = st.session_state.mode
+    api_key     = st.session_state.openai_api_key if provider == "openai" else ""
+    ollama_host = st.session_state.ollama_host    if provider == "ollama" else ""
+    model = (
+        st.session_state.openai_model
+        if provider == "openai"
+        else st.session_state.ollama_model
+    )
+    return _load_pipeline(
+        provider=provider,
+        model=model,
+        mode=mode,
+        api_key=api_key,
+        ollama_host=ollama_host,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -144,20 +313,36 @@ def main() -> None:
         layout="wide",
     )
     _init_state()
-
     where, show_sources, mode = _sidebar()
 
-    st.title("📊 Superstore Sales Analysis")
-    st.caption(f"Ask questions about the Superstore dataset (2014–2017) · mode: `{mode}`")
+    provider = st.session_state.provider
+    model    = (
+        st.session_state.openai_model
+        if provider == "openai"
+        else st.session_state.ollama_model
+    )
 
+    st.title("📊 Superstore Sales Analysis")
+    st.caption(
+        f"Ask questions about the Superstore dataset (2014–2017) · "
+        f"provider: `{provider}` · model: `{model}` · mode: `{mode}`"
+    )
+
+    # Guard: OpenAI needs an API key
+    if provider == "openai" and not st.session_state.openai_api_key:
+        st.info("👈 Enter your OpenAI API key in the sidebar.", icon="🔑")
+        return
+
+    # Render conversation history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if show_sources and (msg.get("summary_hits") or msg.get("txn_hits")):
                 _render_sources(msg.get("summary_hits", []), msg.get("txn_hits", []))
 
-    prefill = st.session_state.pop("prefill", None)
+    prefill  = st.session_state.pop("prefill", None)
     question = st.chat_input("Ask a question about Superstore sales...") or prefill
+
     if not question:
         return
 
@@ -165,14 +350,17 @@ def main() -> None:
     with st.chat_message("user"):
         st.markdown(question)
 
-    rag = load_pipeline(mode)
+    rag = _get_pipeline()
+
     with st.chat_message("assistant"):
-        spinner_msg = "Retrieving and generating..." if mode == "direct" else "Agent thinking and retrieving..."
+        spinner_msg = (
+            "Retrieving and generating..."
+            if mode == "direct"
+            else "Agent thinking and retrieving..."
+        )
         with st.spinner(spinner_msg):
             result = rag.ask(question, summary_where=where, use_memory=True)
-
         st.markdown(result["answer"])
-
         if show_sources:
             _render_sources(result["summary_hits"], result["txn_hits"])
 

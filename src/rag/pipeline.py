@@ -11,11 +11,11 @@ direct  (default)
 agent
     The pipeline passes tool schemas to the LLM and runs an agentic loop:
     the model decides which tools to call, with what queries and filters,
-    until it has enough context to answer.  Requires an Ollama model with
-    function/tool-calling support (llama3.2, mistral, …).
+    until it has enough context to answer.
+    Requires a model with function/tool-calling support.
 
-Switching modes is a single constructor parameter.  The retrieval logic lives
-entirely in tools.py — the pipeline never touches ChromaDB directly.
+The pipeline is fully provider-agnostic: it receives a BaseLLMAdapter
+instance and never imports OpenAI or Ollama directly.
 """
 
 from __future__ import annotations
@@ -29,11 +29,17 @@ if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
 import json
-import ollama
+
+from llm.openai_adapter import OpenAIAdapter
+from llm.ollama_adapter import OllamaAdapter
 from vector_db.store import get_client, get_embedding_function, get_collection
 from rag.tools import RetrievalTool, make_tools
 
 _DEFAULT_DB = os.path.join(_SRC_DIR, "vector_db", "chroma_db")
+
+# ---------------------------------------------------------------------------
+# System prompts
+# ---------------------------------------------------------------------------
 
 _SYSTEM_DIRECT = """\
 You are a business intelligence analyst specialized in retail sales data.
@@ -53,19 +59,11 @@ Guidelines:
 
 
 # ---------------------------------------------------------------------------
-# Context formatting (used in direct mode)
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _parse_where(where) -> dict | None:
-    """
-    Normalise the 'where' argument coming from an LLM tool call.
-
-    The LLM sometimes serialises the filter as a JSON string instead of a
-    nested dict.  Also guards against logically impossible filters such as
-    {"$and": [{"region": "West"}, {"region": "East"}]} — matching a single
-    field against two distinct values with AND is always empty; drop the
-    filter and let the tool return unfiltered results instead.
-    """
+    """Sanitise a metadata filter dict coming from LLM arguments or the UI."""
     if where is None:
         return None
     if isinstance(where, str):
@@ -76,7 +74,6 @@ def _parse_where(where) -> dict | None:
     if not isinstance(where, dict):
         return None
 
-    # Detect contradictory $and: same key appears with two different values
     if "$and" in where:
         clauses = where["$and"]
         if isinstance(clauses, list):
@@ -86,7 +83,7 @@ def _parse_where(where) -> dict | None:
                     for k, v in clause.items():
                         seen.setdefault(k, set()).add(str(v))
             if any(len(vals) > 1 for vals in seen.values()):
-                return None  # contradictory — drop filter entirely
+                return None
 
     return where
 
@@ -114,40 +111,40 @@ class RAGPipeline:
 
     Parameters
     ----------
+    llm         : OpenAIAdapter or OllamaAdapter instance
     persist_dir : path to the ChromaDB directory built by build_index.py
-    model       : Ollama model name (e.g. 'llama3.2:3b', 'mistral')
-    mode        : 'direct' or 'agent' — see module docstring
+    mode        : 'direct' or 'agent'
     n_summary   : default top-k for search_summaries  (direct mode)
     n_txn       : default top-k for search_transactions (direct mode)
     """
 
     def __init__(
         self,
+        llm: OpenAIAdapter | OllamaAdapter,
         persist_dir: str = _DEFAULT_DB,
-        model: str = "llama3.2:3b",
         mode: str = "direct",
         n_summary: int = 5,
         n_txn: int = 2,
-    ):
+    ) -> None:
         if mode not in ("direct", "agent"):
             raise ValueError(f"mode must be 'direct' or 'agent', got {mode!r}")
 
-        self.model = model
+        self._llm = llm
         self.mode = mode
         self.n_summary = n_summary
         self.n_txn = n_txn
 
-        client = get_client(persist_dir)
+        chroma = get_client(persist_dir)
         ef = get_embedding_function()
         self.tools: dict[str, RetrievalTool] = make_tools(
-            get_collection(client, "summaries",    ef),
-            get_collection(client, "transactions", ef),
+            get_collection(chroma, "summaries",    ef),
+            get_collection(chroma, "transactions", ef),
         )
 
         self.history: list[dict] = []
 
     # ------------------------------------------------------------------
-    # Public retrieval helpers (delegate to tool objects)
+    # Public retrieval helpers
     # ------------------------------------------------------------------
 
     def retrieve_summaries(
@@ -184,25 +181,6 @@ class RAGPipeline:
         include_transactions: bool = True,
         use_memory: bool = True,
     ) -> dict:
-        """
-        Answer a question using the configured retrieval mode.
-
-        Parameters
-        ----------
-        question             : natural-language question
-        summary_where        : metadata filter passed to search_summaries (direct mode)
-        txn_where            : metadata filter passed to search_transactions (direct mode)
-        include_transactions : if False, skip transaction retrieval (direct mode only)
-        use_memory           : prepend recent conversation history to the prompt
-
-        Returns
-        -------
-        dict:
-          answer        : LLM response text
-          summary_hits  : chunks from 'summaries' collection
-          txn_hits      : chunks from 'transactions' collection
-          mode          : 'direct' or 'agent'
-        """
         if self.mode == "direct":
             answer, summary_hits, txn_hits = self._run_direct(
                 question, summary_where, txn_where, include_transactions, use_memory,
@@ -236,7 +214,7 @@ class RAGPipeline:
         )
         context = _build_direct_context(summary_hits, txn_hits)
 
-        messages = [{"role": "system", "content": _SYSTEM_DIRECT}]
+        messages: list[dict] = [{"role": "system", "content": _SYSTEM_DIRECT}]
         if use_memory and self.history:
             messages.extend(self.history[-6:])
         messages.append({
@@ -244,12 +222,13 @@ class RAGPipeline:
             "content": f"Context (from Superstore sales database):\n{context}\n\nQuestion: {question}",
         })
 
-        answer = ollama.chat(model=self.model, messages=messages).message.content
+        llm_msg = self._llm.chat(messages)
+        answer = llm_msg.content or ""
         self._update_history(question, answer, use_memory)
         return answer, summary_hits, txn_hits
 
     # ------------------------------------------------------------------
-    # Agent mode — agentic tool-call loop
+    # Agent mode
     # ------------------------------------------------------------------
 
     def _run_agent(
@@ -257,46 +236,69 @@ class RAGPipeline:
         question: str,
         use_memory: bool,
     ) -> tuple[str, list[dict], list[dict]]:
-        tool_schemas = [t.to_ollama_schema() for t in self.tools.values()]
+        if not self._llm.supports_tools():
+            # Graceful degradation: fall back to direct mode
+            return self._run_direct(question, None, None, True, use_memory)
+
+        tool_schemas = [t.to_openai_schema() for t in self.tools.values()]
         summary_hits: list[dict] = []
         txn_hits:     list[dict] = []
 
-        messages: list = [{"role": "system", "content": _SYSTEM_AGENT}]
+        messages: list[dict] = [{"role": "system", "content": _SYSTEM_AGENT}]
         if use_memory and self.history:
             messages.extend(self.history[-6:])
         messages.append({"role": "user", "content": question})
 
         while True:
-            response = ollama.chat(model=self.model, messages=messages, tools=tool_schemas)
-            msg = response.message
+            llm_msg = self._llm.chat(messages, tools=tool_schemas)
 
-            if not msg.tool_calls:
-                answer = msg.content
+            # No tool calls → final answer
+            if not llm_msg.tool_calls:
+                answer = llm_msg.content or ""
                 self._update_history(question, answer, use_memory)
                 return answer, summary_hits, txn_hits
 
-            # Append assistant turn (with tool_calls) so the model sees its own decisions
-            messages.append(msg)
+            # Append assistant turn (keep raw tool_calls for providers that need it)
+            assistant_turn: dict = {
+                "role":    "assistant",
+                "content": llm_msg.content,
+            }
+            # Re-attach raw tool_calls blob if the underlying SDK object is present
+            # (OpenAI SDK needs the original object; Ollama works with dicts)
+            if llm_msg.raw is not None and hasattr(llm_msg.raw, "tool_calls"):
+                assistant_turn["tool_calls"] = llm_msg.raw.tool_calls
+            else:
+                assistant_turn["tool_calls"] = [
+                    {
+                        "id":       tc.id,
+                        "type":     "function",
+                        "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
+                    }
+                    for tc in llm_msg.tool_calls
+                ]
+            messages.append(assistant_turn)
 
-            for tc in msg.tool_calls:
-                name = tc.function.name
-                args = tc.function.arguments  # dict from ollama SDK
-
-                if name not in self.tools:
-                    result_text = f"Error: unknown tool '{name}'."
+            # Execute each tool call and feed results back
+            for tc in llm_msg.tool_calls:
+                if tc.name not in self.tools:
+                    result_text = f"Error: unknown tool '{tc.name}'."
                 else:
-                    hits = self.tools[name](
-                        query=args.get("query", ""),
-                        where=_parse_where(args.get("where")),
-                        n_results=args.get("n_results"),
+                    hits = self.tools[tc.name](
+                        query=tc.arguments.get("query", ""),
+                        where=_parse_where(tc.arguments.get("where")),
+                        n_results=tc.arguments.get("n_results"),
                     )
                     result_text = _fmt_hits(hits) if hits else "No results found."
-                    if name == "search_summaries":
+                    if tc.name == "search_summaries":
                         summary_hits.extend(hits)
                     else:
                         txn_hits.extend(hits)
 
-                messages.append({"role": "tool", "content": result_text})
+                messages.append({
+                    "role":         "tool",
+                    "tool_call_id": tc.id,
+                    "content":      result_text,
+                })
 
     # ------------------------------------------------------------------
     # Conversation memory
