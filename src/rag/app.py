@@ -65,6 +65,60 @@ def _model_options(provider: str) -> list[str]:
 # Helpers
 # ---------------------------------------------------------------------------
 
+_TOOL_LABELS = {
+    "search_summaries":    "Search summaries",
+    "search_transactions": "Search transactions",
+}
+
+
+def _render_agent_events(events: list[dict], live: bool = False) -> None:
+    """
+    Render tool-call/result events inside the current st.status context.
+    live=True  → called during generation (status is already open by caller)
+    live=False → called from history (opens its own collapsed status)
+    """
+    def _body() -> None:
+        for event in events:
+            if event["type"] == "tool_call":
+                label = _TOOL_LABELS.get(event["name"], event["name"])
+                where_str = f" · filter `{event['where']}`" if event["where"] else ""
+                st.write(f"**🔍 {label}**: `{event['query']}`{where_str}")
+            elif event["type"] == "tool_result":
+                n = event["n_hits"]
+                preview = event["preview"]
+                st.caption(
+                    f"↳ {n} result{'s' if n != 1 else ''} — "
+                    f"{preview[:120]}{'…' if len(preview) > 120 else ''}"
+                )
+
+    if live:
+        _body()
+    else:
+        with st.status("Agent steps", state="complete", expanded=False):
+            _body()
+
+
+def _run_agent_ui(rag: RAGPipeline, question: str) -> tuple[str, list[dict]]:
+    """
+    Run agent mode, render live tool calls + results, return (answer, events).
+    Events are stored in s.messages so the thinking process survives re-renders.
+    """
+    answer = ""
+    events: list[dict] = []
+
+    with st.status("Agent thinking...", expanded=True) as status:
+        for event in rag.stream_agent(question, use_memory=True):
+            events.append(event)
+            if event["type"] == "answer":
+                answer = event["text"]
+                status.update(label="Agent steps", state="complete", expanded=False)
+            else:
+                _render_agent_events([event], live=True)
+
+    st.markdown(answer)
+    return answer, events
+
+
 def _render_sources(summary_hits: list[dict], txn_hits: list[dict]) -> None:
     total = len(summary_hits) + len(txn_hits)
     with st.expander(f"Sources ({total} retrieved)", expanded=False):
@@ -253,6 +307,8 @@ def main() -> None:
 
     for msg in s.messages:
         with st.chat_message(msg["role"]):
+            if msg.get("agent_events"):
+                _render_agent_events(msg["agent_events"])
             st.markdown(msg["content"])
             if show_sources and (msg.get("summary_hits") or msg.get("txn_hits")):
                 _render_sources(msg.get("summary_hits", []), msg.get("txn_hits", []))
@@ -269,9 +325,9 @@ def main() -> None:
     rag = _get_rag()
     with st.chat_message("assistant"):
         if mode == "agent":
-            with st.spinner("Agent thinking and retrieving..."):
-                answer = st.write_stream(rag.stream(question, use_memory=True))
+            answer, agent_events = _run_agent_ui(rag, question)
         else:
+            agent_events = []
             answer = st.write_stream(
                 rag.stream(question, summary_where=where, use_memory=True)
             )
@@ -281,6 +337,7 @@ def main() -> None:
     s.messages.append({
         "role":         "assistant",
         "content":      answer,
+        "agent_events": agent_events,
         "summary_hits": rag.last_summary_hits,
         "txn_hits":     rag.last_txn_hits,
     })

@@ -44,7 +44,6 @@ class OpenAIProvider(LLMProvider):
         kwargs: dict = {"model": self.model, "messages": messages}
         if tools:
             kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
 
         resp = self._client.chat.completions.create(**kwargs)
         msg = resp.choices[0].message
@@ -61,7 +60,8 @@ class OpenAIProvider(LLMProvider):
                 tcs.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
 
         # Build a serialisable assistant dict (the SDK object is not JSON-serialisable)
-        raw: dict = {"role": "assistant", "content": msg.content}
+        # content must be a string (not None) for some compatible APIs
+        raw: dict = {"role": "assistant", "content": msg.content or ""}
         if msg.tool_calls:
             raw["tool_calls"] = [
                 {

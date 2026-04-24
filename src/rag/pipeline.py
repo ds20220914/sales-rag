@@ -283,6 +283,84 @@ class RAGPipeline:
 
         self._update_history(question, "".join(chunks), use_memory)
 
+    def stream_agent(
+        self,
+        question:   str,
+        use_memory: bool = True,
+    ) -> Generator[dict, None, None]:
+        """
+        Run agent mode and yield structured events for UI rendering.
+
+        Event shapes
+        ------------
+        {"type": "tool_call",   "name": str, "query": str, "where": dict|None}
+        {"type": "tool_result", "name": str, "n_hits": int, "preview": str}
+        {"type": "answer",      "text": str}
+
+        After the generator is exhausted, last_summary_hits / last_txn_hits
+        are populated exactly like ask().
+        """
+        tool_schemas  = [t.to_ollama_schema() for t in self.tools.values()]
+        summary_hits: list[dict] = []
+        txn_hits:     list[dict] = []
+
+        messages: list = [{"role": "system", "content": _SYSTEM_AGENT}]
+        if use_memory and self.history:
+            messages.extend(self.history[-6:])
+        messages.append({"role": "user", "content": question})
+
+        for _ in range(self._AGENT_MAX_ITERS):
+            response = self.llm.chat(messages, tools=tool_schemas)
+
+            if not response.tool_calls:
+                answer = response.content or ""
+                self._last_summary_hits = summary_hits
+                self._last_txn_hits     = txn_hits
+                self._update_history(question, answer, use_memory)
+                yield {"type": "answer", "text": answer}
+                return
+
+            messages.append(response.raw_message)
+
+            for tc in response.tool_calls:
+                yield {
+                    "type":  "tool_call",
+                    "name":  tc.name,
+                    "query": tc.arguments.get("query", ""),
+                    "where": tc.arguments.get("where"),
+                }
+
+                if tc.name not in self.tools:
+                    result_text = f"Error: unknown tool '{tc.name}'."
+                    yield {"type": "tool_result", "name": tc.name,
+                           "n_hits": 0, "preview": result_text}
+                else:
+                    hits = self.tools[tc.name](
+                        query=tc.arguments.get("query", ""),
+                        where=_parse_where(tc.arguments.get("where")),
+                        n_results=tc.arguments.get("n_results"),
+                    )
+                    result_text = _fmt_hits(hits) if hits else "No results found."
+                    preview = hits[0]["text"][:200] if hits else "No results found."
+                    yield {"type": "tool_result", "name": tc.name,
+                           "n_hits": len(hits), "preview": preview}
+                    if tc.name == "search_summaries":
+                        summary_hits.extend(hits)
+                    else:
+                        txn_hits.extend(hits)
+
+                messages.append(self.llm.make_tool_message(tc, result_text))
+
+        # Max iterations reached — ask model to summarise with what it has
+        messages.append({"role": "user",
+                         "content": "Please summarise your findings so far."})
+        response = self.llm.chat(messages)
+        answer = response.content or ""
+        self._last_summary_hits = summary_hits
+        self._last_txn_hits     = txn_hits
+        self._update_history(question, answer, use_memory)
+        yield {"type": "answer", "text": answer}
+
     def reset_memory(self) -> None:
         self.history.clear()
 
@@ -334,6 +412,8 @@ class RAGPipeline:
     # Internal — agent mode
     # ------------------------------------------------------------------
 
+    _AGENT_MAX_ITERS = 6  # guard against infinite tool-call loops
+
     def _run_agent(
         self,
         question:   str,
@@ -348,7 +428,7 @@ class RAGPipeline:
             messages.extend(self.history[-6:])
         messages.append({"role": "user", "content": question})
 
-        while True:
+        for _ in range(self._AGENT_MAX_ITERS):
             response = self.llm.chat(messages, tools=tool_schemas)
 
             if not response.tool_calls:
@@ -374,6 +454,14 @@ class RAGPipeline:
                         txn_hits.extend(hits)
 
                 messages.append(self.llm.make_tool_message(tc, result_text))
+
+        # Max iterations reached — ask model to summarise with what it has
+        messages.append({"role": "user",
+                         "content": "Please summarise your findings so far."})
+        response = self.llm.chat(messages)
+        answer = response.content or ""
+        self._update_history(question, answer, use_memory)
+        return answer, summary_hits, txn_hits
 
     # ------------------------------------------------------------------
     # Conversation memory
