@@ -33,7 +33,7 @@ class OpenAIProvider(LLMProvider):
         base_url: str | None = None,
     ):
         from openai import OpenAI  # lazy — not required when using Ollama
-        self._client = OpenAI(api_key=api_key, base_url=base_url or None)
+        self._client = OpenAI(api_key=api_key or None, base_url=base_url or None)
         self.model = model
 
     def chat(
@@ -82,6 +82,8 @@ class OpenAIProvider(LLMProvider):
             model=self.model, messages=messages, stream=True,
         )
         for chunk in stream:
+            if not chunk.choices:
+                continue
             text = chunk.choices[0].delta.content
             if text:
                 yield text
