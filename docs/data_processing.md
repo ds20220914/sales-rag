@@ -309,7 +309,7 @@ chunks = chunk_all_sizes(docs)
 | **1000** | **Balanced (default)** | **Best overall performance for this dataset** |
 | 2000 | Coarse-grained | More context per chunk; may dilute relevance for specific queries |
 
-Because the documents in this dataset are short by design, chunk size primarily controls how many transaction records would be grouped if batch chunking is ever introduced, and how large summary documents would be split should they grow in future iterations.
+Because the documents in this dataset are short by design, all three chunk sizes produce the same number of chunks (10,432) — no document is ever split. This is a deliberate outcome: each document was constructed to cover exactly one transaction, one time period, or one dimension combination, so every unit is already semantically atomic. The more consequential granularity decision was made in `text_converter.py` — representing each sales order as an individual document rather than concatenating multiple rows — which determines what the embedding model sees as a single retrievable unit. Chunk size remains configurable for future iterations where document length may grow.
 
 ---
 
