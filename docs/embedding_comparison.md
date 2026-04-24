@@ -6,10 +6,10 @@ _Generated automatically by `compare_embeddings.py`_
 
 | Model | Params | Dims | Index time (s) | HIGH | MED | LOW | Avg top-1 dist |
 |-------|--------|------|---------------|------|-----|-----|----------------|
-| MiniLM-L6 (baseline) | 22 M | 384 | 89 | 13 | 0 | 0 | 0.2701 |
-| multi-qa-MiniLM-L6 (QA-tuned) | 22 M | 384 | 90 | 13 | 0 | 0 | 0.2541 |
-| mpnet-base-v2 (high-quality) | 110 M | 768 | 574 | 13 | 0 | 0 | 0.2656 |
-| bge-small-en-v1.5 (SOTA small) | 33 M | 384 | 174 | 13 | 0 | 0 | 0.1796 |
+| MiniLM-L6 (baseline) | 22 M | 384 | 25 | 13 | 0 | 0 | 0.2701 |
+| multi-qa-MiniLM-L6 (QA-tuned) | 22 M | 384 | 25 | 13 | 0 | 0 | 0.2541 |
+| mpnet-base-v2 (high-quality) | 110 M | 768 | 140 | 13 | 0 | 0 | 0.2656 |
+| bge-small-en-v1.5 (SOTA small) | 33 M | 384 | 46 | 13 | 0 | 0 | 0.1796 |
 
 ## Per-Query Top-1 Distance
 
@@ -51,7 +51,7 @@ _Generated automatically by `compare_embeddings.py`_
 
 **Best average top-1 distance**: bge-small-en-v1.5 (SOTA small) (0.1796)
 
-**Fastest indexing**: MiniLM-L6 (baseline) (89s)
+**Fastest indexing**: multi-qa-MiniLM-L6 (QA-tuned) (25s)
 
 ### Queries where top-1 document differs across models
 
